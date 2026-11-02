@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Current connection configuration
 let connection = {
   mode: "demo",
   connected: true,
@@ -19,7 +18,6 @@ let connection = {
   message: "Running in demo mode"
 };
 
-// Sensor readings
 let sensorData = {
   temperature: 28,
   smoke: 120,
@@ -27,14 +25,12 @@ let sensorData = {
   light: 650
 };
 
-// Device states
 let devices = {
   bedroomLight: false,
   livingRoomLight: false,
   fan: false
 };
 
-// Server status
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -43,18 +39,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// Connection status
 app.get("/api/connection", (req, res) => {
-  res.json({
-    success: true,
-    data: connection
-  });
+  res.json({ success: true, data: connection });
 });
 
-// Configure connection mode
 app.post("/api/connection/config", (req, res) => {
   const { mode, esp32Url } = req.body;
-
   const supportedModes = ["demo", "hc05", "esp32"];
 
   if (!supportedModes.includes(mode)) {
@@ -85,7 +75,7 @@ app.post("/api/connection/config", (req, res) => {
       mode === "demo"
         ? "Demo mode is active"
         : mode === "hc05"
-          ? "HC-05 selected. Local Bluetooth bridge is not installed yet."
+          ? "HC-05 selected. Local Bluetooth bridge is required."
           : "ESP32 selected. Hardware communication is not configured yet."
   };
 
@@ -96,23 +86,14 @@ app.post("/api/connection/config", (req, res) => {
   });
 });
 
-// Sensor readings
 app.get("/api/sensors", (req, res) => {
-  res.json({
-    success: true,
-    data: sensorData
-  });
+  res.json({ success: true, data: sensorData });
 });
 
-// Device states
 app.get("/api/devices", (req, res) => {
-  res.json({
-    success: true,
-    data: devices
-  });
+  res.json({ success: true, data: devices });
 });
 
-// Device control
 app.post("/api/devices/:device", (req, res) => {
   const device = req.params.device;
   const { state } = req.body;
@@ -147,12 +128,13 @@ app.post("/api/devices/:device", (req, res) => {
   });
 });
 
-// Receive sensor readings from future hardware integrations
 app.post("/api/hardware/sensors", (req, res) => {
   const suppliedKey = req.headers["x-device-key"];
 
-  if (!process.env.DEVICE_API_KEY ||
-      suppliedKey !== process.env.DEVICE_API_KEY) {
+  if (
+    !process.env.DEVICE_API_KEY ||
+    suppliedKey !== process.env.DEVICE_API_KEY
+  ) {
     return res.status(401).json({
       success: false,
       message: "Invalid device API key"
@@ -173,12 +155,7 @@ app.post("/api/hardware/sensors", (req, res) => {
     });
   }
 
-  sensorData = {
-    temperature,
-    smoke,
-    motion,
-    light
-  };
+  sensorData = { temperature, smoke, motion, light };
 
   res.json({
     success: true,
@@ -187,11 +164,16 @@ app.post("/api/hardware/sensors", (req, res) => {
   });
 });
 
-// Start API server
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("-----------------------------------");
-  console.log(" Smart Home Automation API");
-  console.log(` Running at http://localhost:${PORT}`);
-  console.log(" Connection modes: Demo / HC-05 / ESP32");
-  console.log("-----------------------------------");
-});
+// Export the Express app for Vercel
+module.exports = app;
+
+// Start a normal server when running locally
+if (require.main === module) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log("-----------------------------------");
+    console.log(" Smart Home Automation API");
+    console.log(` Running at http://localhost:${PORT}`);
+    console.log(" Connection modes: Demo / HC-05 / ESP32");
+    console.log("-----------------------------------");
+  });
+}
