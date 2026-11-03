@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import {
   Home, Lightbulb, Thermometer, Shield, Settings,
   Fan, Activity, Flame, Sun, Moon, Wifi, Power,
-  Menu, X, Bluetooth, Save, Server, RefreshCw, Unplug
+  Menu, X, Bluetooth, Save, Server, Unplug
 } from "lucide-react";
 
 import {
@@ -12,10 +12,21 @@ import {
   updateDevice
 } from "./services/sensorService";
 
+import {
+  isBluetoothSupported,
+  connectBluetooth,
+  sendBluetoothCommand,
+  disconnectBluetooth
+} from "./services/bluetoothSerial";
+
 import "./App.css";
 
-const API = "http://localhost:5000/api";
-const BRIDGE = "http://localhost:5001";
+const API = "https://smart-home-automation-28ma.vercel.app/api";
+
+const COMMANDS = {
+  bedroomLight: { on: "1", off: "0" },
+  livingRoomLight: { on: "2", off: "3" }
+};
 
 function App() {
   const [activePage, setActivePage] = useState("Dashboard");
@@ -49,12 +60,7 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
 
-  const [bridgeRunning, setBridgeRunning] = useState(false);
   const [bluetoothConnected, setBluetoothConnected] = useState(false);
-  const [bluetoothSimulated, setBluetoothSimulated] = useState(false);
-  const [selectedPort, setSelectedPort] = useState("");
-  const [availablePorts, setAvailablePorts] = useState([]);
-  const [scanning, setScanning] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [fanUpdating, setFanUpdating] = useState(false);
 
@@ -68,7 +74,6 @@ function App() {
     { name: "Settings", icon: Settings }
   ];
 
-  // Load dashboard, backend connection and Bluetooth status
   useEffect(() => {
     let mounted = true;
 
@@ -81,15 +86,10 @@ function App() {
 
         if (!mounted) return;
 
-        if (sensors) {
-          setSensorData(sensors);
-        }
+        if (sensors) setSensorData(sensors);
 
         if (deviceData && connectionModeRef.current !== "hc05") {
-          setDevices(previous => ({
-            ...previous,
-            ...deviceData
-          }));
+          setDevices(previous => ({ ...previous, ...deviceData }));
         }
       } catch (error) {
         console.error("Dashboard update error:", error);
@@ -108,45 +108,14 @@ function App() {
           connectionModeRef.current = result.data.mode;
         }
       } catch (error) {
-        console.error("Backend connection status error:", error);
-      }
-    };
-
-    const loadBluetoothStatus = async () => {
-      try {
-        const response = await fetch(`${BRIDGE}/health`);
-        const result = await response.json();
-
-        if (!response.ok || !result.success) {
-          throw new Error("Bridge unavailable");
-        }
-
-        if (mounted) {
-          setBridgeRunning(true);
-          setBluetoothConnected(Boolean(result.connected));
-          setBluetoothSimulated(Boolean(result.simulated));
-          setSelectedPort(
-            result.simulated ? "" : result.selectedPort || ""
-          );
-        }
-      } catch {
-        if (mounted) {
-          setBridgeRunning(false);
-          setBluetoothConnected(false);
-          setBluetoothSimulated(false);
-          setSelectedPort("");
-        }
+        console.error("Connection settings error:", error);
       }
     };
 
     loadData();
     loadConnection();
-    loadBluetoothStatus();
 
-    const interval = setInterval(() => {
-      loadData();
-      loadBluetoothStatus();
-    }, 2000);
+    const interval = setInterval(loadData, 5000);
 
     return () => {
       mounted = false;
@@ -154,139 +123,39 @@ function App() {
     };
   }, []);
 
-  // Scan Windows COM ports
-  const scanBluetoothPorts = async () => {
-    setScanning(true);
-    setNotice("");
-
-    try {
-      const response = await fetch(`${BRIDGE}/api/ports`);
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Unable to scan COM ports.");
-      }
-
-      setAvailablePorts(result.ports || []);
-
-      if (result.ports?.length > 0) {
-        setSelectedPort(current => {
-          const stillAvailable = result.ports.some(
-            port => port.path === current
-          );
-
-          return stillAvailable ? current : result.ports[0].path;
-        });
-
-        setNotice(
-          `Found ${result.ports.length} serial port(s). Select your HC-05 port.`
-        );
-      } else {
-        setSelectedPort("");
-        setNotice("No COM ports found. Pair your HC-05 with Windows first.");
-      }
-    } catch {
-      setNotice(
-        "Bluetooth Bridge is unavailable. Start the bridge on this laptop."
-      );
-      setBridgeRunning(false);
-    } finally {
-      setScanning(false);
-    }
-  };
-
-  // Connect physical HC-05
-  const connectBluetooth = async () => {
-    if (!selectedPort) {
-      setNotice("Please scan and select an HC-05 COM port first.");
-      return;
-    }
-
+  const connectBluetoothDevice = async () => {
     setConnecting(true);
     setNotice("");
 
     try {
-      const response = await fetch(`${BRIDGE}/api/connect`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          port: selectedPort
-        })
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Bluetooth connection failed.");
+      if (!isBluetoothSupported()) {
+        throw new Error(
+          "Web Serial is unavailable. Use Chrome or Edge on a supported computer."
+        );
       }
 
+      await connectBluetooth();
+
       setBluetoothConnected(true);
-      setBluetoothSimulated(false);
-      setSelectedPort(result.port || selectedPort);
-      setNotice(result.message);
+      setNotice("HC-05 connected successfully.");
     } catch (error) {
       setBluetoothConnected(false);
-      setNotice(error.message || "Could not connect to HC-05.");
+      setNotice(error.message || "Bluetooth connection failed.");
     } finally {
       setConnecting(false);
     }
   };
 
-  // Disconnect Bluetooth
-  const disconnectBluetooth = async () => {
-    setNotice("");
-
+  const disconnectBluetoothDevice = async () => {
     try {
-      const endpoint = bluetoothSimulated
-        ? "/api/demo/disconnect"
-        : "/api/disconnect";
-
-      const response = await fetch(`${BRIDGE}${endpoint}`, {
-        method: "POST"
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Disconnect failed.");
-      }
-
+      await disconnectBluetooth();
       setBluetoothConnected(false);
-      setBluetoothSimulated(false);
-      setSelectedPort("");
-      setNotice(result.message);
+      setNotice("Bluetooth disconnected.");
     } catch (error) {
-      setNotice(error.message || "Could not disconnect Bluetooth.");
+      setNotice(error.message || "Bluetooth disconnect failed.");
     }
   };
 
-  // Connect simulated Bluetooth
-  const connectDemoBluetooth = async () => {
-    setNotice("");
-
-    try {
-      const response = await fetch(`${BRIDGE}/api/demo/connect`, {
-        method: "POST"
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Demo connection failed.");
-      }
-
-      setBluetoothConnected(true);
-      setBluetoothSimulated(true);
-      setSelectedPort("");
-      setNotice(result.message);
-    } catch (error) {
-      setNotice(error.message || "Could not start Bluetooth Demo.");
-    }
-  };
-
-  // Save selected connection mode
   const saveConnection = async () => {
     if (selectedMode === "esp32" && !esp32Url.trim()) {
       setNotice("Please enter your ESP32 IP address.");
@@ -299,9 +168,7 @@ function App() {
     try {
       const response = await fetch(`${API}/connection/config`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: selectedMode,
           esp32Url: esp32Url.trim()
@@ -310,8 +177,12 @@ function App() {
 
       const result = await response.json();
 
-      if (!response.ok) {
-        throw new Error(result.message || "Configuration failed.");
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Could not save settings.");
+      }
+
+      if (connectionModeRef.current === "hc05" && selectedMode !== "hc05") {
+        await disconnectBluetoothDevice();
       }
 
       setConnection(result.data);
@@ -324,58 +195,29 @@ function App() {
     }
   };
 
-  // Send fan command through Bluetooth bridge
-  const sendBluetoothFanCommand = async (state, speed) => {
-    const response = await fetch(`${BRIDGE}/api/send`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        device: "fan",
-        state,
-        speed
-      })
-    });
+  const sendFanCommand = async (state, speed) => {
+    if (connection.mode === "hc05") {
+      if (!bluetoothConnected) {
+        throw new Error("Connect HC-05 first.");
+      }
 
-    const result = await response.json();
-
-    if (!response.ok || !result.success) {
-      throw new Error(
-        result.message || "Fan command is not supported by the bridge yet."
-      );
-    }
-
-    return result;
-  };
-
-  // Fan ON/OFF
-  const setFanPower = async (newState) => {
-    if (fanUpdating) return;
-
-    if (connection.mode === "hc05" && !bluetoothConnected) {
-      setNotice("Connect Bluetooth first.");
+      await sendBluetoothCommand(state ? `FAN:${speed}` : "FAN:0");
       return;
     }
+
+    await updateDevice("fan", state);
+  };
+
+  const setFanPower = async (newState) => {
+    if (fanUpdating) return;
 
     setFanUpdating(true);
     setNotice("");
 
     try {
-      if (connection.mode === "hc05") {
-        await sendBluetoothFanCommand(
-          newState,
-          newState ? fanSpeed : 0
-        );
-      } else {
-        await updateDevice("fan", newState);
-      }
+      await sendFanCommand(newState, newState ? fanSpeed : 0);
 
-      setDevices(previous => ({
-        ...previous,
-        fan: newState
-      }));
-
+      setDevices(previous => ({ ...previous, fan: newState }));
       setNotice(newState ? "Fan turned ON." : "Fan turned OFF.");
     } catch (error) {
       setNotice(error.message || "Fan control failed.");
@@ -384,10 +226,8 @@ function App() {
     }
   };
 
-  // Fan speed control
-  const changeFanSpeed = async (newSpeed) => {
-    const speed = Number(newSpeed);
-
+  const changeFanSpeed = async (value) => {
+    const speed = Number(value);
     setFanSpeed(speed);
 
     if (!devices.fan) {
@@ -395,24 +235,14 @@ function App() {
       return;
     }
 
-    if (connection.mode === "hc05") {
-      if (!bluetoothConnected) {
-        setNotice("Connect Bluetooth first.");
-        return;
-      }
-
-      try {
-        await sendBluetoothFanCommand(true, speed);
-        setNotice(`Fan speed set to ${speed}%.`);
-      } catch (error) {
-        setNotice(error.message || "Could not change fan speed.");
-      }
-    } else {
-      setNotice(`Fan speed set to ${speed}% in the interface.`);
+    try {
+      await sendFanCommand(true, speed);
+      setNotice(`Fan speed set to ${speed}%.`);
+    } catch (error) {
+      setNotice(error.message || "Could not change fan speed.");
     }
   };
 
-  // Light and other device controls
   const toggleDevice = async (device) => {
     if (device === "fan") {
       await setFanPower(!devices.fan);
@@ -421,121 +251,49 @@ function App() {
 
     const newState = !devices[device];
 
-    if (connection.mode === "hc05") {
-      if (!bluetoothConnected) {
-        setNotice("Connect Bluetooth first.");
-        return;
-      }
-
-      try {
-        const response = await fetch(`${BRIDGE}/api/send`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            device,
-            state: newState
-          })
-        });
-
-        const result = await response.json();
-
-        if (!response.ok || !result.success) {
-          throw new Error(result.message || "Bluetooth command failed.");
+    try {
+      if (connection.mode === "hc05") {
+        if (!bluetoothConnected) {
+          setNotice("Connect HC-05 first.");
+          return;
         }
 
-        setDevices(previous => ({
-          ...previous,
-          [device]: newState
-        }));
+        const command = newState
+          ? COMMANDS[device].on
+          : COMMANDS[device].off;
 
-        setNotice(result.message);
-      } catch (error) {
-        setNotice(error.message || "Bluetooth command failed.");
+        await sendBluetoothCommand(command);
+      } else {
+        await updateDevice(device, newState);
       }
 
-      return;
-    }
-
-    setDevices(previous => ({
-      ...previous,
-      [device]: newState
-    }));
-
-    try {
-      await updateDevice(device, newState);
-      setNotice("Device updated successfully.");
+      setDevices(previous => ({ ...previous, [device]: newState }));
+      setNotice(`${device} turned ${newState ? "ON" : "OFF"}.`);
     } catch (error) {
-      setDevices(previous => ({
-        ...previous,
-        [device]: !newState
-      }));
-
       setNotice(error.message || "Device control failed.");
     }
   };
 
   const deviceList = [
-    {
-      key: "bedroomLight",
-      name: "Bedroom Light",
-      room: "Bedroom",
-      icon: Lightbulb
-    },
-    {
-      key: "livingRoomLight",
-      name: "Living Room Light",
-      room: "Living Room",
-      icon: Lightbulb
-    },
-    {
-      key: "fan",
-      name: "Cooling Fan",
-      room: "Living Room",
-      icon: Fan
-    }
+    { key: "bedroomLight", name: "Bedroom Light", room: "Bedroom", icon: Lightbulb },
+    { key: "livingRoomLight", name: "Living Room Light", room: "Living Room", icon: Lightbulb },
+    { key: "fan", name: "Cooling Fan", room: "Living Room", icon: Fan }
   ];
 
   const sensorList = [
-    {
-      name: "Temperature",
-      value: `${sensorData.temperature} °C`,
-      icon: Thermometer,
-      description: "LM35 sensor"
-    },
-    {
-      name: "Smoke Level",
-      value: sensorData.smoke,
-      icon: Flame,
-      description: "MQ-2 sensor"
-    },
-    {
-      name: "Motion Detection",
-      value: sensorData.motion ? "Detected" : "No Motion",
-      icon: Activity,
-      description: "PIR sensor"
-    },
-    {
-      name: "Light Intensity",
-      value: sensorData.light,
-      icon: Sun,
-      description: "LDR sensor"
-    }
+    { name: "Temperature", value: `${sensorData.temperature} °C`, icon: Thermometer, description: "LM35 sensor" },
+    { name: "Smoke Level", value: sensorData.smoke, icon: Flame, description: "MQ-2 sensor" },
+    { name: "Motion Detection", value: sensorData.motion ? "Detected" : "No Motion", icon: Activity, description: "PIR sensor" },
+    { name: "Light Intensity", value: sensorData.light, icon: Sun, description: "LDR sensor" }
   ];
 
-  // Sensor cards
-  const renderSensors = (list) => (
+  const renderSensors = list => (
     <div className="sensor-grid">
       {list.map(sensor => {
         const Icon = sensor.icon;
-
         return (
           <div className="sensor-card" key={sensor.name}>
-            <div className="card-icon">
-              <Icon />
-            </div>
-
+            <div className="card-icon"><Icon /></div>
             <h3>{sensor.name}</h3>
             <h2>{sensor.value}</h2>
             <p>{sensor.description}</p>
@@ -545,8 +303,7 @@ function App() {
     </div>
   );
 
-  // Device cards
-  const renderDevices = (list) => (
+  const renderDevices = list => (
     <div className="device-grid">
       {list.map(device => {
         const Icon = device.icon;
@@ -555,10 +312,7 @@ function App() {
         return (
           <div className="device-card" key={device.key}>
             <div className="device-top">
-              <div className="card-icon">
-                <Icon />
-              </div>
-
+              <div className="card-icon"><Icon /></div>
               <span className={isOn ? "active-label" : "inactive-label"}>
                 {isOn ? "ON" : "OFF"}
               </span>
@@ -568,20 +322,14 @@ function App() {
             <p>{device.room}</p>
 
             <button
-              className={
-                isOn
-                  ? "device-button active-button"
-                  : "device-button"
-              }
+              className={isOn ? "device-button active-button" : "device-button"}
               onClick={() => toggleDevice(device.key)}
               disabled={device.key === "fan" && fanUpdating}
             >
               <Power size={17} />
               {device.key === "fan" && fanUpdating
                 ? "Updating..."
-                : isOn
-                  ? "Turn OFF"
-                  : "Turn ON"}
+                : isOn ? "Turn OFF" : "Turn ON"}
             </button>
           </div>
         );
@@ -589,7 +337,6 @@ function App() {
     </div>
   );
 
-  // Fan controls
   const renderFanControl = () => (
     <section className="dashboard-section">
       <div className="section-heading">
@@ -599,10 +346,7 @@ function App() {
 
       <div className="overview-card" style={{ display: "block" }}>
         <div className="device-top">
-          <div className="card-icon">
-            <Fan size={26} />
-          </div>
-
+          <div className="card-icon"><Fan size={26} /></div>
           <span className={devices.fan ? "active-label" : "inactive-label"}>
             {devices.fan ? "ON" : "OFF"}
           </span>
@@ -612,30 +356,17 @@ function App() {
         <p>Turn your cooling fan on or off.</p>
 
         <button
-          className={
-            devices.fan
-              ? "device-button active-button"
-              : "device-button"
-          }
+          className={devices.fan ? "device-button active-button" : "device-button"}
           onClick={() => setFanPower(!devices.fan)}
           disabled={fanUpdating}
           style={{ marginTop: "15px" }}
         >
           <Power size={17} />
-          {fanUpdating
-            ? "Updating..."
-            : devices.fan
-              ? "Turn Fan OFF"
-              : "Turn Fan ON"}
+          {fanUpdating ? "Updating..." : devices.fan ? "Turn Fan OFF" : "Turn Fan ON"}
         </button>
 
         <div style={{ marginTop: "28px" }}>
-          <div style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: "10px",
-            marginBottom: "12px"
-          }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
             <label htmlFor="fan-speed">Fan Speed</label>
             <strong>{fanSpeed}%</strong>
           </div>
@@ -648,36 +379,16 @@ function App() {
             step="5"
             value={fanSpeed}
             onChange={event => changeFanSpeed(event.target.value)}
-            style={{
-              width: "100%",
-              cursor: "pointer",
-              accentColor: "#3b82f6"
-            }}
+            style={{ width: "100%", cursor: "pointer", accentColor: "#3b82f6" }}
           />
 
-          <div style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginTop: "8px",
-            fontSize: "13px",
-            opacity: 0.7
-          }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: "8px", fontSize: "13px", opacity: 0.7 }}>
             <span>0% — Off</span>
             <span>100% — Maximum</span>
           </div>
         </div>
 
-        {connection.mode === "hc05" && !bluetoothConnected && (
-          <p role="status" style={{ marginTop: "15px" }}>
-            Connect Bluetooth in Settings before controlling the fan.
-          </p>
-        )}
-
-        {notice && (
-          <p role="status" style={{ marginTop: "15px" }}>
-            {notice}
-          </p>
-        )}
+        {notice && <p role="status" style={{ marginTop: "15px" }}>{notice}</p>}
       </div>
     </section>
   );
@@ -694,21 +405,15 @@ function App() {
         {connection.mode === "demo"
           ? "Demo Mode"
           : connection.mode === "hc05"
-            ? bluetoothConnected
-              ? "Bluetooth Connected"
-              : "Bluetooth Disconnected"
+            ? bluetoothConnected ? "Bluetooth Connected" : "Bluetooth Disconnected"
             : "ESP32 Selected"}
       </div>
     </div>
   );
 
-  // Settings page
   const renderSettings = () => (
     <>
-      {heading(
-        "Connection Settings",
-        "Connect your own smart home hardware."
-      )}
+      {heading("Connection Settings", "Connect your own smart home hardware.")}
 
       <section className="dashboard-section">
         <div className="section-heading">
@@ -717,53 +422,28 @@ function App() {
         </div>
 
         <div className="device-grid">
-          <div
-            className="device-card"
-            style={{
-              border: selectedMode === "demo" ? "2px solid #3b82f6" : undefined,
-              cursor: "pointer"
-            }}
-            onClick={() => setSelectedMode("demo")}
-          >
-            <div className="card-icon"><Home /></div>
-            <h3>Demo Mode</h3>
-            <p>Use the application without hardware.</p>
-            <span className={selectedMode === "demo" ? "active-label" : "inactive-label"}>
-              {selectedMode === "demo" ? "SELECTED" : "SELECT"}
-            </span>
-          </div>
-
-          <div
-            className="device-card"
-            style={{
-              border: selectedMode === "hc05" ? "2px solid #3b82f6" : undefined,
-              cursor: "pointer"
-            }}
-            onClick={() => setSelectedMode("hc05")}
-          >
-            <div className="card-icon"><Bluetooth /></div>
-            <h3>Arduino + HC-05</h3>
-            <p>Connect Arduino through your laptop's Bluetooth bridge.</p>
-            <span className={selectedMode === "hc05" ? "active-label" : "inactive-label"}>
-              {selectedMode === "hc05" ? "SELECTED" : "SELECT"}
-            </span>
-          </div>
-
-          <div
-            className="device-card"
-            style={{
-              border: selectedMode === "esp32" ? "2px solid #3b82f6" : undefined,
-              cursor: "pointer"
-            }}
-            onClick={() => setSelectedMode("esp32")}
-          >
-            <div className="card-icon"><Wifi /></div>
-            <h3>ESP32 Wi-Fi</h3>
-            <p>Connect your ESP32 controller through Wi-Fi.</p>
-            <span className={selectedMode === "esp32" ? "active-label" : "inactive-label"}>
-              {selectedMode === "esp32" ? "SELECTED" : "SELECT"}
-            </span>
-          </div>
+          {[
+            { mode: "demo", title: "Demo Mode", description: "Use the application without hardware.", icon: Home },
+            { mode: "hc05", title: "Arduino + HC-05", description: "Connect directly through your browser.", icon: Bluetooth },
+            { mode: "esp32", title: "ESP32 Wi-Fi", description: "Connect your ESP32 controller through Wi-Fi.", icon: Wifi }
+          ].map(item => {
+            const Icon = item.icon;
+            return (
+              <div
+                className="device-card"
+                key={item.mode}
+                style={{ border: selectedMode === item.mode ? "2px solid #3b82f6" : undefined, cursor: "pointer" }}
+                onClick={() => setSelectedMode(item.mode)}
+              >
+                <div className="card-icon"><Icon /></div>
+                <h3>{item.title}</h3>
+                <p>{item.description}</p>
+                <span className={selectedMode === item.mode ? "active-label" : "inactive-label"}>
+                  {selectedMode === item.mode ? "SELECTED" : "SELECT"}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -771,284 +451,101 @@ function App() {
         <section className="dashboard-section">
           <div className="section-heading">
             <h2>HC-05 Bluetooth Connection</h2>
-            <span>
-              {bluetoothConnected
-                ? bluetoothSimulated
-                  ? "Demo Connected"
-                  : "Physically Connected"
-                : "Not Connected"}
-            </span>
+            <span>{bluetoothConnected ? "Connected" : "Not Connected"}</span>
           </div>
 
           <div className="overview-card" style={{ display: "block" }}>
-            <div className="device-top">
-              <div className="card-icon">
-                <Bluetooth size={26} />
-              </div>
-
-              <span className={bridgeRunning ? "active-label" : "inactive-label"}>
-                {bridgeRunning ? "BRIDGE ONLINE" : "BRIDGE OFFLINE"}
-              </span>
-            </div>
-
-            <h3>Local Bluetooth Bridge</h3>
-
+            <div className="card-icon"><Bluetooth size={26} /></div>
+            <h3>Connect your Arduino HC-05</h3>
             <p>
-              Bridge: {bridgeRunning ? "Running on this laptop" : "Not detected"}
+              Pair your HC-05 with Windows first. Use Chrome or Edge on a
+              supported computer. Select the Bluetooth serial COM port when
+              your browser asks for permission.
             </p>
 
-            <p>
-              Bluetooth: {bluetoothConnected
-                ? bluetoothSimulated
-                  ? "Demo connection active"
-                  : `Connected to ${selectedPort || "HC-05"}`
-                : "Disconnected"}
+            <button
+              className="device-button active-button"
+              onClick={connectBluetoothDevice}
+              disabled={connecting || bluetoothConnected}
+              style={{ marginTop: "18px" }}
+            >
+              <Bluetooth size={17} />
+              {connecting ? "Connecting..." : "Connect HC-05"}
+            </button>
+
+            <button
+              className="device-button"
+              onClick={disconnectBluetoothDevice}
+              disabled={!bluetoothConnected}
+              style={{ marginLeft: "10px", marginTop: "18px" }}
+            >
+              <Unplug size={17} />
+              Disconnect
+            </button>
+
+            <p role="status" style={{ marginTop: "15px" }}>
+              {notice || (bluetoothConnected ? "Bluetooth is connected." : "Not connected yet.")}
             </p>
 
-            <div style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "10px",
-              marginTop: "18px"
-            }}>
-              <button
-                className="device-button"
-                onClick={loadBluetoothStatusForButton}
-                disabled={scanning}
-              >
-                <RefreshCw size={17} />
-                Check Bridge
-              </button>
-
-              <button
-                className="device-button"
-                onClick={scanBluetoothPorts}
-                disabled={scanning || !bridgeRunning}
-              >
-                <RefreshCw size={17} />
-                {scanning ? "Scanning..." : "Scan COM Ports"}
-              </button>
-            </div>
-
-            <div style={{ marginTop: "20px" }}>
-              <label htmlFor="bluetooth-port">
-                Select HC-05 COM Port
-              </label>
-
-              <select
-                id="bluetooth-port"
-                value={selectedPort}
-                onChange={event => setSelectedPort(event.target.value)}
-                disabled={!bridgeRunning || bluetoothConnected}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "13px",
-                  marginTop: "10px",
-                  borderRadius: "8px",
-                  border: "1px solid #374151",
-                  background: "#111827",
-                  color: "white"
-                }}
-              >
-                <option value="">Select a COM port</option>
-
-                {availablePorts.map(port => (
-                  <option key={port.path} value={port.path}>
-                    {port.path} — {port.manufacturer}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "10px",
-              marginTop: "15px"
-            }}>
-              <button
-                className="device-button active-button"
-                onClick={connectBluetooth}
-                disabled={
-                  !bridgeRunning ||
-                  !selectedPort ||
-                  connecting ||
-                  bluetoothConnected
-                }
-              >
-                <Bluetooth size={17} />
-                {connecting ? "Connecting..." : "Connect HC-05"}
-              </button>
-
-              <button
-                className="device-button"
-                onClick={disconnectBluetooth}
-                disabled={!bluetoothConnected}
-              >
-                <Unplug size={17} />
-                Disconnect
-              </button>
-            </div>
-
-            <p style={{ marginTop: "18px" }}>
-              Pair your HC-05 with Windows first. Select the outgoing
-              Bluetooth COM port created by Windows.
-            </p>
-
-            {!bridgeRunning && (
-              <p role="status" style={{ marginTop: "12px" }}>
-                Start the Bluetooth Bridge in its terminal using npm run dev.
-              </p>
+            {!isBluetoothSupported() && (
+              <p>Web Serial is not supported by this browser.</p>
             )}
-
-            {notice && (
-              <p role="status" style={{ marginTop: "15px" }}>
-                {notice}
-              </p>
-            )}
-          </div>
-
-          <div
-            className="overview-card"
-            style={{ display: "block", marginTop: "18px" }}
-          >
-            <h3>Test Without Physical Hardware</h3>
-            <p>
-              Use Demo Bluetooth to test the website without an Arduino or HC-05.
-            </p>
-
-            <div style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "10px",
-              marginTop: "15px"
-            }}>
-              <button
-                className="device-button active-button"
-                onClick={connectDemoBluetooth}
-                disabled={!bridgeRunning || bluetoothConnected}
-              >
-                <Bluetooth size={17} />
-                Connect Demo Bluetooth
-              </button>
-
-              <button
-                className="device-button"
-                onClick={disconnectBluetooth}
-                disabled={!bluetoothConnected}
-              >
-                <Unplug size={17} />
-                Disconnect
-              </button>
-            </div>
           </div>
         </section>
       )}
 
       {selectedMode === "esp32" && (
         <section className="dashboard-section">
-          <div className="section-heading">
-            <h2>ESP32 Network Settings</h2>
-          </div>
-
+          <div className="section-heading"><h2>ESP32 Network Settings</h2></div>
           <div className="overview-card" style={{ display: "block" }}>
-            <label htmlFor="esp32-address">
-              ESP32 IP Address or API URL
-            </label>
-
+            <label htmlFor="esp32-address">ESP32 IP Address or API URL</label>
             <input
               id="esp32-address"
               type="text"
               value={esp32Url}
               onChange={event => setEsp32Url(event.target.value)}
               placeholder="http://192.168.1.100"
-              style={{
-                display: "block",
-                width: "100%",
-                padding: "13px",
-                marginTop: "12px",
-                marginBottom: "10px",
-                borderRadius: "8px",
-                border: "1px solid #374151",
-                background: "#111827",
-                color: "white"
-              }}
+              style={{ display: "block", width: "100%", padding: "13px", marginTop: "12px", borderRadius: "8px", border: "1px solid #374151", background: "#111827", color: "white" }}
             />
-
             <p>Enter the local IP address of your ESP32 controller.</p>
           </div>
         </section>
       )}
 
       <section className="dashboard-section">
-        <button
-          className="device-button active-button"
-          onClick={saveConnection}
-          disabled={saving}
-        >
+        <button className="device-button active-button" onClick={saveConnection} disabled={saving}>
           <Save size={18} />
           {saving ? "Saving..." : "Save Connection"}
         </button>
-
-        {notice && selectedMode !== "hc05" && (
-          <p role="status" style={{ marginTop: "15px" }}>
-            {notice}
-          </p>
-        )}
+        {notice && <p role="status" style={{ marginTop: "15px" }}>{notice}</p>}
       </section>
 
       <section className="dashboard-section">
-        <div className="section-heading">
-          <h2>Current Configuration</h2>
-        </div>
-
+        <div className="section-heading"><h2>Current Configuration</h2></div>
         <div className="overview-card">
           <Server />
           <h3>{connection.controller}</h3>
           <p>Mode: {connection.mode.toUpperCase()}</p>
-
-          <p>
-            Status: {connection.mode === "hc05"
-              ? bluetoothConnected
-                ? bluetoothSimulated
-                  ? "Demo Bluetooth Connected"
-                  : "Physical Bluetooth Connected"
-                : "Bluetooth Disconnected"
-              : connection.connected
-                ? "Ready"
-                : "Not connected"}
-          </p>
-
+          <p>Status: {connection.mode === "hc05" ? bluetoothConnected ? "Bluetooth Connected" : "Bluetooth Disconnected" : connection.connected ? "Ready" : "Not connected"}</p>
           <p>{connection.message}</p>
-
-          {connection.esp32Url && (
-            <p>ESP32 address: {connection.esp32Url}</p>
-          )}
+          {connection.esp32Url && <p>ESP32 address: {connection.esp32Url}</p>}
         </div>
       </section>
     </>
   );
 
-  // Dashboard pages
   const renderPage = () => {
     switch (activePage) {
       case "Dashboard":
         return (
           <>
-            {heading(
-              "Smart Home Dashboard",
-              "Monitor and control your home devices."
-            )}
+            {heading("Smart Home Dashboard", "Monitor and control your home devices.")}
 
             <div className="overview-grid">
               <div className="overview-card">
                 <div className="card-icon"><Lightbulb /></div>
                 <h3>Room Lights</h3>
-                <h2>
-                  {Number(devices.bedroomLight) +
-                    Number(devices.livingRoomLight)} / 2
-                </h2>
+                <h2>{Number(devices.bedroomLight) + Number(devices.livingRoomLight)} / 2</h2>
                 <p>Lights ON</p>
               </div>
 
@@ -1063,9 +560,7 @@ function App() {
                 <div className="card-icon"><Fan /></div>
                 <h3>Cooling Fan</h3>
                 <h2>{devices.fan ? "ON" : "OFF"}</h2>
-                <p>
-                  {devices.fan ? `Speed: ${fanSpeed}%` : "Fan stopped"}
-                </p>
+                <p>{devices.fan ? `Speed: ${fanSpeed}%` : "Fan stopped"}</p>
               </div>
 
               <div className="overview-card">
@@ -1077,85 +572,30 @@ function App() {
             </div>
 
             <section className="dashboard-section">
-              <div className="section-heading">
-                <h2>Device Controls</h2>
-                <span>Device management</span>
-              </div>
-
+              <div className="section-heading"><h2>Device Controls</h2><span>Device management</span></div>
               {renderDevices(deviceList)}
             </section>
 
             <section className="dashboard-section">
-              <div className="section-heading">
-                <h2>Sensor Monitoring</h2>
-                <span>Refreshes every 2 seconds</span>
-              </div>
-
+              <div className="section-heading"><h2>Sensor Monitoring</h2><span>Refreshes every 5 seconds</span></div>
               {renderSensors(sensorList)}
             </section>
           </>
         );
 
       case "Room Lights":
-        return (
-          <>
-            {heading("Room Lights", "Control your room lighting.")}
-            {renderDevices(deviceList.slice(0, 2))}
-          </>
-        );
+        return <>{heading("Room Lights", "Control your room lighting.")}{renderDevices(deviceList.slice(0, 2))}</>;
 
       case "Climate Control":
-        return (
-          <>
-            {heading(
-              "Climate Control",
-              "Monitor temperature and control your fan."
-            )}
-
-            {renderSensors(sensorList.slice(0, 1))}
-            {renderFanControl()}
-          </>
-        );
+        return <>{heading("Climate Control", "Monitor temperature and control your fan.")}{renderSensors(sensorList.slice(0, 1))}{renderFanControl()}</>;
 
       case "Security":
-        return (
-          <>
-            {heading(
-              "Security Monitoring",
-              "Monitor motion and smoke readings."
-            )}
-
-            {renderSensors(sensorList.slice(1, 3))}
-          </>
-        );
+        return <>{heading("Security Monitoring", "Monitor motion and smoke readings.")}{renderSensors(sensorList.slice(1, 3))}</>;
 
       default:
         return renderSettings();
     }
   };
-
-  // Refresh Bluetooth status from Settings
-  async function loadBluetoothStatusForButton() {
-    try {
-      const response = await fetch(`${BRIDGE}/health`);
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error("Bridge unavailable");
-      }
-
-      setBridgeRunning(true);
-      setBluetoothConnected(Boolean(result.connected));
-      setBluetoothSimulated(Boolean(result.simulated));
-      setSelectedPort(result.simulated ? "" : result.selectedPort || "");
-      setNotice("Bluetooth Bridge is running.");
-    } catch {
-      setBridgeRunning(false);
-      setBluetoothConnected(false);
-      setBluetoothSimulated(false);
-      setNotice("Bluetooth Bridge is not running. Start it on this laptop.");
-    }
-  }
 
   return (
     <div className="app-container">
@@ -1163,13 +603,7 @@ function App() {
         <div className="logo">
           <Home size={27} />
           <h2>SmartHome</h2>
-
-          <button
-            className="close-menu"
-            onClick={() => setMenuOpen(false)}
-          >
-            <X />
-          </button>
+          <button className="close-menu" onClick={() => setMenuOpen(false)}><X /></button>
         </div>
 
         <p className="menu-label">MENU</p>
@@ -1177,15 +611,10 @@ function App() {
         <nav>
           {navigation.map(item => {
             const Icon = item.icon;
-
             return (
               <button
                 key={item.name}
-                className={
-                  activePage === item.name
-                    ? "nav-item active-nav"
-                    : "nav-item"
-                }
+                className={activePage === item.name ? "nav-item active-nav" : "nav-item"}
                 onClick={() => {
                   setActivePage(item.name);
                   setMenuOpen(false);
@@ -1201,43 +630,26 @@ function App() {
         <div className="sidebar-bottom">
           <div className="connection-status">
             <span className="status-dot" />
-
-            {connection.mode === "demo"
-              ? "Demo Active"
-              : connection.mode === "hc05"
-                ? bluetoothConnected
-                  ? "Bluetooth Connected"
-                  : "Bluetooth Offline"
-                : "ESP32 Selected"}
+            {connection.mode === "demo" ? "Demo Active" : connection.mode === "hc05" ? bluetoothConnected ? "Bluetooth Connected" : "Bluetooth Offline" : "ESP32 Selected"}
           </div>
-
           <p>Smart Home Automation</p>
         </div>
       </aside>
 
       <main className="main-content">
         <header className="topbar">
-          <button
-            className="menu-button"
-            onClick={() => setMenuOpen(true)}
-          >
-            <Menu />
-          </button>
-
+          <button className="menu-button" onClick={() => setMenuOpen(true)}><Menu /></button>
           <div>
             <span>SMART HOME</span>
             <h3>Control Center</h3>
           </div>
-
           <div className="topbar-right">
             <Moon size={20} />
             <span>{connection.mode.toUpperCase()}</span>
           </div>
         </header>
 
-        <div className="content-area">
-          {renderPage()}
-        </div>
+        <div className="content-area">{renderPage()}</div>
       </main>
     </div>
   );
